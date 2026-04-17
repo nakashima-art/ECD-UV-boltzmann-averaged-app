@@ -13,15 +13,123 @@ R_KCAL = 0.0019872041  # kcal mol^-1 K^-1
 
 
 # --------------------------------------------------
-# 補助：ファイル名から配座キーを作る
-# 例:
-# conf01_optfreq.log -> conf01
-# conf01_tddft.log   -> conf01
+# 補助：ファイル名正規化
+# optfreq / tddft などの種別語を除いたうえで、
+# 「末尾が共通」するものを対応付ける
 # --------------------------------------------------
-def make_base_key(filename):
+def normalize_filename_for_pairing(filename):
     name = filename.rsplit(".", 1)[0]  # 拡張子除去
-    name = re.sub(r"(_optfreq|_opt|_freq|_tddft|_td)$", "", name, flags=re.IGNORECASE)
+    name = name.lower()
+
+    # 区切り記号をある程度統一
+    name = re.sub(r"[\s\-]+", "_", name)
+
+    # 種別語を除去
+    # 例:
+    # sample_conf01_optfreq -> sample_conf01
+    # xxx_conf01_tddft     -> xxx_conf01
+    name = re.sub(r"(?:_)?(?:optfreq|opt|freq|tddft|td)(?:_)?", "_", name)
+
+    # 連続する "_" を整理
+    name = re.sub(r"_+", "_", name).strip("_")
+
     return name
+
+
+def split_tokens_for_suffix_matching(filename):
+    normalized = normalize_filename_for_pairing(filename)
+    if not normalized:
+        return []
+    return normalized.split("_")
+
+
+def common_suffix_token_count(tokens1, tokens2):
+    n = 0
+    i = 1
+    while i <= min(len(tokens1), len(tokens2)):
+        if tokens1[-i] == tokens2[-i]:
+            n += 1
+            i += 1
+        else:
+            break
+    return n
+
+
+def common_suffix_char_length(s1, s2):
+    n = 0
+    i = 1
+    while i <= min(len(s1), len(s2)):
+        if s1[-i] == s2[-i]:
+            n += 1
+            i += 1
+        else:
+            break
+    return n
+
+
+def pair_files_by_common_suffix(optfreq_files, tddft_files):
+    """
+    optfreq 側と tddft 側を「共通末尾」で対応付ける。
+    優先順位:
+      1) 末尾一致トークン数が多い
+      2) 末尾一致文字数が多い
+    """
+    opt_infos = []
+    for f in optfreq_files:
+        opt_infos.append({
+            "file": f,
+            "name": f.name,
+            "norm": normalize_filename_for_pairing(f.name),
+            "tokens": split_tokens_for_suffix_matching(f.name),
+        })
+
+    td_infos = []
+    for f in tddft_files:
+        td_infos.append({
+            "file": f,
+            "name": f.name,
+            "norm": normalize_filename_for_pairing(f.name),
+            "tokens": split_tokens_for_suffix_matching(f.name),
+        })
+
+    candidate_pairs = []
+    for oi in opt_infos:
+        for ti in td_infos:
+            token_score = common_suffix_token_count(oi["tokens"], ti["tokens"])
+            char_score = common_suffix_char_length(oi["norm"], ti["norm"])
+
+            # 末尾一致が全くないものは候補から外す
+            if token_score == 0 and char_score < 3:
+                continue
+
+            candidate_pairs.append({
+                "opt_name": oi["name"],
+                "td_name": ti["name"],
+                "token_score": token_score,
+                "char_score": char_score,
+            })
+
+    # 良い候補順に並べる
+    candidate_pairs.sort(
+        key=lambda x: (x["token_score"], x["char_score"]),
+        reverse=True
+    )
+
+    used_opt = set()
+    used_td = set()
+    final_pairs = []
+
+    for c in candidate_pairs:
+        if c["opt_name"] in used_opt:
+            continue
+        if c["td_name"] in used_td:
+            continue
+
+        used_opt.add(c["opt_name"])
+        used_td.add(c["td_name"])
+        final_pairs.append(c)
+
+    return final_pairs
 
 
 # --------------------------------------------------
@@ -199,73 +307,77 @@ sigma_nm = st.number_input("Gaussian broadening 幅 sigma (nm)", min_value=0.1, 
 
 if optfreq_files and tddft_files:
     # ------------------------
-    # optfreq 側を辞書化
+    # まず内容を読み込んで保持
     # ------------------------
-    energy_dict = {}
+    optfreq_data = {}
     for f in optfreq_files:
         text = f.read().decode("utf-8", errors="ignore")
-        key = make_base_key(f.name)
         energies = extract_energies(text)
-
-        energy_dict[key] = {
+        optfreq_data[f.name] = {
             "optfreq_file": f.name,
             "scf_energy": energies["scf_energy"],
             "zpe_energy": energies["zpe_energy"],
             "free_energy": energies["free_energy"],
         }
 
-    # ------------------------
-    # tddft 側を辞書化
-    # ------------------------
-    transition_dict = {}
+    tddft_data = {}
     for f in tddft_files:
         text = f.read().decode("utf-8", errors="ignore")
-        key = make_base_key(f.name)
         transitions = extract_transitions(text)
-
-        transition_dict[key] = {
+        tddft_data[f.name] = {
             "tddft_file": f.name,
             "transitions": transitions,
             "n_transitions": len(transitions),
         }
 
     # ------------------------
-    # 共通キーでマージ
+    # 共通末尾でペアリング
     # ------------------------
-    common_keys = sorted(set(energy_dict.keys()) & set(transition_dict.keys()))
-    only_energy_keys = sorted(set(energy_dict.keys()) - set(transition_dict.keys()))
-    only_tddft_keys = sorted(set(transition_dict.keys()) - set(energy_dict.keys()))
+    pairs = pair_files_by_common_suffix(optfreq_files, tddft_files)
+
+    paired_opt_names = {p["opt_name"] for p in pairs}
+    paired_td_names = {p["td_name"] for p in pairs}
+
+    only_energy_keys = sorted(set(optfreq_data.keys()) - paired_opt_names)
+    only_tddft_keys = sorted(set(tddft_data.keys()) - paired_td_names)
 
     st.subheader("4. ペアリング結果")
-    st.write(f"対応付けできた配座数: {len(common_keys)}")
+    st.write(f"対応付けできた配座数: {len(pairs)}")
 
     if only_energy_keys:
-        st.warning("opt/optfreq 側だけにあるキー: " + ", ".join(only_energy_keys))
+        st.warning("opt/optfreq 側だけにあるファイル: " + ", ".join(only_energy_keys))
 
     if only_tddft_keys:
-        st.warning("TD-DFT 側だけにあるキー: " + ", ".join(only_tddft_keys))
+        st.warning("TD-DFT 側だけにあるファイル: " + ", ".join(only_tddft_keys))
 
-    if len(common_keys) == 0:
-        st.error("共通の配座キーが見つかりませんでした。ファイル名規則を確認してください。")
+    if len(pairs) == 0:
+        st.error("対応付け可能なファイルペアが見つかりませんでした。ファイル名規則を確認してください。")
     else:
         records = []
         transition_tables = {}
 
-        for key in common_keys:
-            e = energy_dict[key]
-            t = transition_dict[key]
+        for i, pair in enumerate(pairs, start=1):
+            opt_name = pair["opt_name"]
+            td_name = pair["td_name"]
+
+            e = optfreq_data[opt_name]
+            t = tddft_data[td_name]
+
+            conf_label = f"pair_{i:02d}"
 
             records.append({
-                "conf_key": key,
+                "conf_key": conf_label,
                 "optfreq_file": e["optfreq_file"],
                 "tddft_file": t["tddft_file"],
+                "suffix_token_score": pair["token_score"],
+                "suffix_char_score": pair["char_score"],
                 "scf_energy": e["scf_energy"],
                 "zpe_energy": e["zpe_energy"],
                 "free_energy": e["free_energy"],
                 "n_transitions": t["n_transitions"],
             })
 
-            transition_tables[key] = t["transitions"]
+            transition_tables[conf_label] = t["transitions"]
 
         df = pd.DataFrame(records)
 
@@ -312,7 +424,7 @@ if optfreq_files and tddft_files:
                     averaged_spectrum += weight * y
 
                 st.subheader("7. 抽出された TD-DFT 遷移")
-                for key in common_keys:
+                for key in df["conf_key"]:
                     with st.expander(f"{key} の遷移を表示"):
                         transitions = transition_tables.get(key, [])
                         if transitions:
