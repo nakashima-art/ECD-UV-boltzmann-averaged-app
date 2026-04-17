@@ -5,8 +5,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
-st.title("ECD Boltzmann Averaging App")
-st.write("opt/optfreq ログと TD-DFT ログを別々に読み込み、配座ごとに対応付けて ECD をボルツマン平均します。")
+st.title("ECD / UV Boltzmann Averaging App")
+st.write("opt/optfreq ログと TD-DFT ログを別々に読み込み、配座ごとに対応付けて UV / ECD をボルツマン平均します。")
 
 HARTREE_TO_KCAL = 627.509474
 R_KCAL = 0.0019872041  # kcal mol^-1 K^-1
@@ -14,25 +14,13 @@ R_KCAL = 0.0019872041  # kcal mol^-1 K^-1
 
 # --------------------------------------------------
 # 補助：ファイル名正規化
-# optfreq / tddft などの種別語を除いたうえで、
-# 「末尾が共通」するものを対応付ける
 # --------------------------------------------------
 def normalize_filename_for_pairing(filename):
-    name = filename.rsplit(".", 1)[0]  # 拡張子除去
+    name = filename.rsplit(".", 1)[0]
     name = name.lower()
-
-    # 区切り記号をある程度統一
     name = re.sub(r"[\s\-]+", "_", name)
-
-    # 種別語を除去
-    # 例:
-    # sample_conf01_optfreq -> sample_conf01
-    # xxx_conf01_tddft     -> xxx_conf01
     name = re.sub(r"(?:_)?(?:optfreq|opt|freq|tddft|td)(?:_)?", "_", name)
-
-    # 連続する "_" を整理
     name = re.sub(r"_+", "_", name).strip("_")
-
     return name
 
 
@@ -68,12 +56,6 @@ def common_suffix_char_length(s1, s2):
 
 
 def pair_files_by_common_suffix(optfreq_files, tddft_files):
-    """
-    optfreq 側と tddft 側を「共通末尾」で対応付ける。
-    優先順位:
-      1) 末尾一致トークン数が多い
-      2) 末尾一致文字数が多い
-    """
     opt_infos = []
     for f in optfreq_files:
         opt_infos.append({
@@ -98,7 +80,6 @@ def pair_files_by_common_suffix(optfreq_files, tddft_files):
             token_score = common_suffix_token_count(oi["tokens"], ti["tokens"])
             char_score = common_suffix_char_length(oi["norm"], ti["norm"])
 
-            # 末尾一致が全くないものは候補から外す
             if token_score == 0 and char_score < 3:
                 continue
 
@@ -109,7 +90,6 @@ def pair_files_by_common_suffix(optfreq_files, tddft_files):
                 "char_score": char_score,
             })
 
-    # 良い候補順に並べる
     candidate_pairs.sort(
         key=lambda x: (x["token_score"], x["char_score"]),
         reverse=True
@@ -168,8 +148,6 @@ def extract_energies(text):
 
 # --------------------------------------------------
 # TD-DFT 遷移抽出
-# 例:
-# Excited State   1:      Singlet-A      4.1234 eV  300.73 nm  f=0.1234
 # --------------------------------------------------
 def extract_excited_states(text):
     states = []
@@ -193,8 +171,8 @@ def extract_excited_states(text):
 # --------------------------------------------------
 # Rotatory strength 抽出
 # 注意:
-# Gaussian の出力形式は揺れるので、まずは簡易版
-# "Rotatory Strengths" ブロックの各行末の数値を採用
+# Gaussian 出力形式には揺れがあるので簡易対応
+# 必要に応じて later / velocity の列選択を調整
 # --------------------------------------------------
 def extract_rotatory_strengths(text):
     rot_strengths = []
@@ -218,6 +196,8 @@ def extract_rotatory_strengths(text):
         if re.match(r"^\d+", line):
             nums = re.findall(r"[-+]?\d+\.\d+(?:[Ee][-+]?\d+)?", line)
             if nums:
+                # 暫定的に最後の数値を採用
+                # Gaussian の形式によって必要ならここを調整
                 rot_strengths.append(float(nums[-1]))
 
     return rot_strengths
@@ -239,7 +219,7 @@ def extract_transitions(text):
 
 
 # --------------------------------------------------
-# ボルツマン計算
+# スペクトル構築
 # --------------------------------------------------
 def safe_exp(x):
     try:
@@ -252,15 +232,25 @@ def gaussian_broadening(x, center, height, sigma):
     return height * np.exp(-0.5 * ((x - center) / sigma) ** 2)
 
 
-def build_ecd_spectrum(transitions, wavelength_grid, sigma_nm):
+def build_spectrum(transitions, wavelength_grid, sigma_nm, intensity_key):
     y = np.zeros_like(wavelength_grid)
 
     for tr in transitions:
         wl = tr["wavelength_nm"]
-        rot = tr["rot_strength"]
-        y += gaussian_broadening(wavelength_grid, wl, rot, sigma_nm)
+        height = tr.get(intensity_key, None)
+        if height is None:
+            continue
+        y += gaussian_broadening(wavelength_grid, wl, height, sigma_nm)
 
     return y
+
+
+def build_uv_spectrum(transitions, wavelength_grid, sigma_nm):
+    return build_spectrum(transitions, wavelength_grid, sigma_nm, "osc_strength")
+
+
+def build_ecd_spectrum(transitions, wavelength_grid, sigma_nm):
+    return build_spectrum(transitions, wavelength_grid, sigma_nm, "rot_strength")
 
 
 # --------------------------------------------------
@@ -306,9 +296,6 @@ n_points = st.number_input("プロット点数", min_value=200, value=2000, step
 sigma_nm = st.number_input("Gaussian broadening 幅 sigma (nm)", min_value=0.1, value=10.0, step=0.5)
 
 if optfreq_files and tddft_files:
-    # ------------------------
-    # まず内容を読み込んで保持
-    # ------------------------
     optfreq_data = {}
     for f in optfreq_files:
         text = f.read().decode("utf-8", errors="ignore")
@@ -330,9 +317,6 @@ if optfreq_files and tddft_files:
             "n_transitions": len(transitions),
         }
 
-    # ------------------------
-    # 共通末尾でペアリング
-    # ------------------------
     pairs = pair_files_by_common_suffix(optfreq_files, tddft_files)
 
     paired_opt_names = {p["opt_name"] for p in pairs}
@@ -408,8 +392,11 @@ if optfreq_files and tddft_files:
                 st.dataframe(valid_df)
 
                 wavelength_grid = np.linspace(wl_min, wl_max, int(n_points))
-                individual_spectra = {}
-                averaged_spectrum = np.zeros_like(wavelength_grid)
+
+                individual_uv_spectra = {}
+                individual_ecd_spectra = {}
+                averaged_uv_spectrum = np.zeros_like(wavelength_grid)
+                averaged_ecd_spectrum = np.zeros_like(wavelength_grid)
 
                 for _, row in valid_df.iterrows():
                     key = row["conf_key"]
@@ -419,9 +406,14 @@ if optfreq_files and tddft_files:
                     if len(transitions) == 0:
                         continue
 
-                    y = build_ecd_spectrum(transitions, wavelength_grid, sigma_nm)
-                    individual_spectra[key] = y
-                    averaged_spectrum += weight * y
+                    uv_y = build_uv_spectrum(transitions, wavelength_grid, sigma_nm)
+                    ecd_y = build_ecd_spectrum(transitions, wavelength_grid, sigma_nm)
+
+                    individual_uv_spectra[key] = uv_y
+                    individual_ecd_spectra[key] = ecd_y
+
+                    averaged_uv_spectrum += weight * uv_y
+                    averaged_ecd_spectrum += weight * ecd_y
 
                 st.subheader("7. 抽出された TD-DFT 遷移")
                 for key in df["conf_key"]:
@@ -432,39 +424,57 @@ if optfreq_files and tddft_files:
                         else:
                             st.warning("遷移情報または rotatory strength を抽出できませんでした。")
 
-                st.subheader("8. ECD スペクトル")
                 show_individual = st.checkbox("各配座スペクトルも表示する", value=True)
 
-                fig, ax = plt.subplots(figsize=(8, 5))
+                st.subheader("8. UV スペクトル")
+                fig_uv, ax_uv = plt.subplots(figsize=(8, 5))
 
                 if show_individual:
-                    for key, y in individual_spectra.items():
-                        ax.plot(wavelength_grid, y, label=key)
+                    for key, y in individual_uv_spectra.items():
+                        ax_uv.plot(wavelength_grid, y, label=key)
 
-                ax.plot(wavelength_grid, averaged_spectrum, linewidth=2.5, label="Boltzmann-averaged ECD")
-                ax.axhline(0, linewidth=1)
+                ax_uv.plot(wavelength_grid, averaged_uv_spectrum, linewidth=2.5, label="Boltzmann-averaged UV")
+                ax_uv.set_xlabel("Wavelength (nm)")
+                ax_uv.set_ylabel("UV intensity (arb. units)")
+                ax_uv.set_title("UV Spectrum")
+                ax_uv.legend()
 
-                ax.set_xlabel("Wavelength (nm)")
-                ax.set_ylabel("ECD intensity (arb. units)")
-                ax.set_title("ECD Spectrum")
-                ax.legend()
+                st.pyplot(fig_uv)
 
-                st.pyplot(fig)
+                st.subheader("9. ECD スペクトル")
+                fig_ecd, ax_ecd = plt.subplots(figsize=(8, 5))
+
+                if show_individual:
+                    for key, y in individual_ecd_spectra.items():
+                        ax_ecd.plot(wavelength_grid, y, label=key)
+
+                ax_ecd.plot(wavelength_grid, averaged_ecd_spectrum, linewidth=2.5, label="Boltzmann-averaged ECD")
+                ax_ecd.axhline(0, linewidth=1)
+                ax_ecd.set_xlabel("Wavelength (nm)")
+                ax_ecd.set_ylabel("ECD intensity (arb. units)")
+                ax_ecd.set_title("ECD Spectrum")
+                ax_ecd.legend()
+
+                st.pyplot(fig_ecd)
 
                 export_df = pd.DataFrame({
                     "wavelength_nm": wavelength_grid,
-                    "ecd_avg": averaged_spectrum,
+                    "uv_avg": averaged_uv_spectrum,
+                    "ecd_avg": averaged_ecd_spectrum,
                 })
 
-                for key, y in individual_spectra.items():
+                for key, y in individual_uv_spectra.items():
+                    export_df[f"uv_{key}"] = y
+
+                for key, y in individual_ecd_spectra.items():
                     export_df[f"ecd_{key}"] = y
 
                 csv_data = export_df.to_csv(index=False).encode("utf-8")
 
                 st.download_button(
-                    "平均スペクトルCSVをダウンロード",
+                    "UV / ECD スペクトルCSVをダウンロード",
                     data=csv_data,
-                    file_name="ecd_boltzmann_averaged.csv",
+                    file_name="uv_ecd_boltzmann_averaged.csv",
                     mime="text/csv"
                 )
 
