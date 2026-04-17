@@ -8,7 +8,8 @@ import streamlit as st
 st.title("ECD / UV Boltzmann Averaging App")
 st.caption("ver. 1.0")
 st.write("Upload opt/optfreq logs and TD-DFT logs separately, match conformers, and perform Boltzmann averaging for UV / ECD spectra.")
-st.info("For correct pairing, the opt/optfreq file and the TD-DFT file should share a common suffix in their filenames.")
+st.info("Files are paired based on a common suffix in the filename. Please make sure each opt/optfreq file and its corresponding TD-DFT file share the same suffix.")
+
 HARTREE_TO_KCAL = 627.509474
 R_KCAL = 0.0019872041  # kcal mol^-1 K^-1
 NM_PER_EV = 1239.841984  # lambda(nm) = 1239.841984 / E(eV)
