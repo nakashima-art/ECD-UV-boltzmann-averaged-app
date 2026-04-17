@@ -14,6 +14,8 @@ R_KCAL = 0.0019872041  # kcal mol^-1 K^-1
 
 # --------------------------------------------------
 # 補助：ファイル名正規化
+# optfreq / tddft などの種別語を除いたうえで、
+# 「末尾が共通」するものを対応付ける
 # --------------------------------------------------
 def normalize_filename_for_pairing(filename):
     name = filename.rsplit(".", 1)[0]
@@ -148,6 +150,8 @@ def extract_energies(text):
 
 # --------------------------------------------------
 # TD-DFT 遷移抽出
+# 例:
+# Excited State   1:      Singlet-A      4.1234 eV  300.73 nm  f=0.1234
 # --------------------------------------------------
 def extract_excited_states(text):
     states = []
@@ -170,56 +174,85 @@ def extract_excited_states(text):
 
 # --------------------------------------------------
 # Rotatory strength 抽出
-# 注意:
-# Gaussian 出力形式には揺れがあるので簡易対応
-# 必要に応じて later / velocity の列選択を調整
+# 今回の Gaussian ログ形式では
+# 1) R(length) 表
+# 2) R(velocity) + E-M Angle 表
+# が別々に出るので、明示的に各表を読む
 # --------------------------------------------------
-def extract_rotatory_strengths(text):
+def extract_rotatory_strengths(text, mode="length"):
+    """
+    mode:
+        "length"   -> R(length) を抽出
+        "velocity" -> R(velocity) を抽出
+    """
     rot_strengths = []
 
-    block_match = re.search(
-        r"Rotatory Strengths.*?\n(.*?)(?:\n\s*\n|\n\s*Total|\Z)",
-        text,
-        re.DOTALL
-    )
+    if mode == "length":
+        header_pattern = (
+            r"Rotatory Strengths \(R\) in cgs .*?\n"
+            r"\s*state\s+XX\s+YY\s+ZZ\s+R\(length\)\s*\n"
+        )
+    elif mode == "velocity":
+        header_pattern = (
+            r"Rotatory Strengths \(R\) in cgs .*?\n"
+            r"\s*state\s+XX\s+YY\s+ZZ\s+R\(velocity\)\s+E-M Angle\s*\n"
+        )
+    else:
+        raise ValueError("mode must be 'length' or 'velocity'")
 
-    if not block_match:
+    m = re.search(header_pattern, text, re.IGNORECASE)
+    if not m:
         return rot_strengths
 
-    block = block_match.group(1)
+    start = m.end()
+    lines = text[start:].splitlines()
 
-    for line in block.splitlines():
-        line = line.strip()
-        if not line:
+    for line in lines:
+        stripped = line.strip()
+
+        if not stripped:
+            break
+
+        if not re.match(r"^\d+", stripped):
+            break
+
+        parts = stripped.split()
+
+        try:
+            # length:   state XX YY ZZ R(length)
+            # velocity: state XX YY ZZ R(velocity) E-M Angle
+            if mode == "length" and len(parts) >= 5:
+                rot_strengths.append(float(parts[4]))
+            elif mode == "velocity" and len(parts) >= 5:
+                rot_strengths.append(float(parts[4]))
+        except ValueError:
             continue
-
-        if re.match(r"^\d+", line):
-            nums = re.findall(r"[-+]?\d+\.\d+(?:[Ee][-+]?\d+)?", line)
-            if nums:
-                # 暫定的に最後の数値を採用
-                # Gaussian の形式によって必要ならここを調整
-                rot_strengths.append(float(nums[-1]))
 
     return rot_strengths
 
 
 def extract_transitions(text):
     states = extract_excited_states(text)
-    rot_strengths = extract_rotatory_strengths(text)
+    rot_strengths_len = extract_rotatory_strengths(text, mode="length")
+    rot_strengths_vel = extract_rotatory_strengths(text, mode="velocity")
 
     transitions = []
-    n = min(len(states), len(rot_strengths))
+    n = min(len(states), len(rot_strengths_len))
 
     for i in range(n):
         row = states[i].copy()
-        row["rot_strength"] = rot_strengths[i]
+        row["rot_strength"] = rot_strengths_len[i]  # ECD描画に使用
+        row["rot_strength_length"] = rot_strengths_len[i]
+        row["rot_strength_velocity"] = (
+            rot_strengths_vel[i] if i < len(rot_strengths_vel) else None
+        )
         transitions.append(row)
 
     return transitions
 
 
 # --------------------------------------------------
-# スペクトル構築
+# ボルツマン計算
 # --------------------------------------------------
 def safe_exp(x):
     try:
@@ -296,6 +329,9 @@ n_points = st.number_input("プロット点数", min_value=200, value=2000, step
 sigma_nm = st.number_input("Gaussian broadening 幅 sigma (nm)", min_value=0.1, value=10.0, step=0.5)
 
 if optfreq_files and tddft_files:
+    # ------------------------
+    # 内容を読み込んで保持
+    # ------------------------
     optfreq_data = {}
     for f in optfreq_files:
         text = f.read().decode("utf-8", errors="ignore")
@@ -317,6 +353,9 @@ if optfreq_files and tddft_files:
             "n_transitions": len(transitions),
         }
 
+    # ------------------------
+    # 共通末尾でペアリング
+    # ------------------------
     pairs = pair_files_by_common_suffix(optfreq_files, tddft_files)
 
     paired_opt_names = {p["opt_name"] for p in pairs}
