@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 st.title("ECD / UV Boltzmann Averaging App")
-st.write("opt/optfreq ログと TD-DFT ログを別々に読み込み、配座ごとに対応付けて UV / ECD をボルツマン平均します。")
+st.write("Upload opt/optfreq logs and TD-DFT logs separately, match conformers, and perform Boltzmann averaging for UV / ECD spectra.")
 
 HARTREE_TO_KCAL = 627.509474
 R_KCAL = 0.0019872041  # kcal mol^-1 K^-1
@@ -14,7 +14,7 @@ NM_PER_EV = 1239.841984  # lambda(nm) = 1239.841984 / E(eV)
 
 
 # --------------------------------------------------
-# 補助：ファイル名正規化
+# Helper: normalize filenames for pairing
 # --------------------------------------------------
 def normalize_filename_for_pairing(filename):
     name = filename.rsplit(".", 1)[0]
@@ -114,7 +114,7 @@ def pair_files_by_common_suffix(optfreq_files, tddft_files):
 
 
 # --------------------------------------------------
-# エネルギー抽出（opt/optfreq側）
+# Energy extraction (opt/optfreq)
 # --------------------------------------------------
 def extract_energies(text):
     result = {
@@ -148,7 +148,7 @@ def extract_energies(text):
 
 
 # --------------------------------------------------
-# TD-DFT 遷移抽出
+# TD-DFT transition extraction
 # --------------------------------------------------
 def extract_excited_states(text):
     states = []
@@ -170,13 +170,13 @@ def extract_excited_states(text):
 
 
 # --------------------------------------------------
-# Rotatory strength 抽出
+# Rotatory strength extraction
 # --------------------------------------------------
 def extract_rotatory_strengths(text, mode="length"):
     """
     mode:
-        "length"   -> R(length) を抽出
-        "velocity" -> R(velocity) を抽出
+        "length"   -> extract R(length)
+        "velocity" -> extract R(velocity)
     """
     rot_strengths = []
 
@@ -232,7 +232,7 @@ def extract_transitions(text):
 
     for i in range(n):
         row = states[i].copy()
-        row["rot_strength"] = rot_strengths_len[i]  # ECD 描画に使用
+        row["rot_strength"] = rot_strengths_len[i]
         row["rot_strength_length"] = rot_strengths_len[i]
         row["rot_strength_velocity"] = (
             rot_strengths_vel[i] if i < len(rot_strengths_vel) else None
@@ -243,7 +243,7 @@ def extract_transitions(text):
 
 
 # --------------------------------------------------
-# 数学補助
+# Math helpers
 # --------------------------------------------------
 def safe_exp(x):
     try:
@@ -257,8 +257,7 @@ def gaussian_broadening(x, center, height, sigma):
 
 
 def halfwidth_to_sigma(value):
-    # Gaussian の半値半幅 HWHM -> sigma
-    # HWHM = sigma * sqrt(2 ln 2)
+    # Gaussian HWHM -> sigma
     return value / math.sqrt(2.0 * math.log(2.0))
 
 
@@ -276,7 +275,7 @@ def make_wavelength_grid(wl_min, wl_max, axis_mode, point_spacing_nm=None, n_poi
 
 
 # --------------------------------------------------
-# スペクトル構築
+# Spectrum builders
 # --------------------------------------------------
 def build_spectrum_nm(transitions, wavelength_grid, intensity_key, sigma_nm):
     y = np.zeros_like(wavelength_grid)
@@ -292,11 +291,9 @@ def build_spectrum_nm(transitions, wavelength_grid, intensity_key, sigma_nm):
 
 
 def build_spectrum_ev(transitions, wavelength_grid_nm, intensity_key, sigma_ev):
-    # エネルギー空間で broadening してから、波長軸に補間
     e_min = NM_PER_EV / np.max(wavelength_grid_nm)
     e_max = NM_PER_EV / np.min(wavelength_grid_nm)
 
-    # 十分細かい内部グリッド
     e_grid = np.linspace(e_min, e_max, 4000)
     y_e = np.zeros_like(e_grid)
 
@@ -340,24 +337,24 @@ def build_ecd_spectrum(transitions, wavelength_grid, broadening_mode, sigma_nm=N
 # --------------------------------------------------
 # UI
 # --------------------------------------------------
-st.subheader("1. opt / optfreq ファイル")
+st.subheader("1. opt / optfreq files")
 optfreq_files = st.file_uploader(
-    "opt または optfreq の .log / .out を選択してください",
+    "Select opt or optfreq .log / .out files",
     type=["log", "out"],
     accept_multiple_files=True,
     key="optfreq_files"
 )
 
-st.subheader("2. TD-DFT ファイル")
+st.subheader("2. TD-DFT files")
 tddft_files = st.file_uploader(
-    "TD-DFT の .log / .out を選択してください",
+    "Select TD-DFT .log / .out files",
     type=["log", "out"],
     accept_multiple_files=True,
     key="tddft_files"
 )
 
 energy_choice = st.selectbox(
-    "ボルツマン平均に使うエネルギーを選んでください",
+    "Select the energy to use for Boltzmann averaging",
     options=["free_energy", "zpe_energy", "scf_energy"],
     format_func=lambda x: {
         "free_energy": "Free energy",
@@ -367,28 +364,28 @@ energy_choice = st.selectbox(
 )
 
 temperature = st.number_input(
-    "温度 (K)",
+    "Temperature (K)",
     min_value=1.0,
     value=298.15,
     step=1.0
 )
 
-st.subheader("3. スペクトル設定")
-wl_min = st.number_input("最小波長 (nm)", value=180.0)
-wl_max = st.number_input("最大波長 (nm)", value=450.0)
+st.subheader("3. Spectrum settings")
+wl_min = st.number_input("Minimum wavelength (nm)", value=180.0)
+wl_max = st.number_input("Maximum wavelength (nm)", value=450.0)
 
 axis_mode = st.radio(
-    "横軸の指定方法",
+    "X-axis specification",
     options=["point_spacing", "n_points"],
     format_func=lambda x: {
-        "point_spacing": "ポイント幅で指定",
-        "n_points": "ポイント点数で指定",
+        "point_spacing": "Specify point spacing",
+        "n_points": "Specify number of points",
     }[x]
 )
 
 if axis_mode == "point_spacing":
     point_spacing_nm = st.number_input(
-        "ポイント幅 (nm)",
+        "Point spacing (nm)",
         min_value=0.001,
         value=0.2,
         step=0.1,
@@ -397,7 +394,7 @@ if axis_mode == "point_spacing":
     n_points = None
 else:
     n_points = st.number_input(
-        "プロット点数",
+        "Number of points",
         min_value=2,
         value=2000,
         step=100
@@ -405,17 +402,17 @@ else:
     point_spacing_nm = None
 
 broadening_mode = st.radio(
-    "Broadening の指定方法",
+    "Broadening specification",
     options=["sigma_nm", "halfwidth_ev"],
     format_func=lambda x: {
-        "sigma_nm": "Gaussian broadening 幅 sigma (nm)",
+        "sigma_nm": "Gaussian broadening width sigma (nm)",
         "halfwidth_ev": "Half-Width (eV)",
     }[x]
 )
 
 if broadening_mode == "sigma_nm":
     sigma_nm = st.number_input(
-        "Gaussian broadening 幅 sigma (nm)",
+        "Gaussian broadening width sigma (nm)",
         min_value=0.001,
         value=10.0,
         step=0.5
@@ -461,17 +458,17 @@ if optfreq_files and tddft_files:
     only_energy_keys = sorted(set(optfreq_data.keys()) - paired_opt_names)
     only_tddft_keys = sorted(set(tddft_data.keys()) - paired_td_names)
 
-    st.subheader("4. ペアリング結果")
-    st.write(f"対応付けできた配座数: {len(pairs)}")
+    st.subheader("4. Pairing results")
+    st.write(f"Number of matched conformers: {len(pairs)}")
 
     if only_energy_keys:
-        st.warning("opt/optfreq 側だけにあるファイル: " + ", ".join(only_energy_keys))
+        st.warning("Files found only on the opt/optfreq side: " + ", ".join(only_energy_keys))
 
     if only_tddft_keys:
-        st.warning("TD-DFT 側だけにあるファイル: " + ", ".join(only_tddft_keys))
+        st.warning("Files found only on the TD-DFT side: " + ", ".join(only_tddft_keys))
 
     if len(pairs) == 0:
-        st.error("対応付け可能なファイルペアが見つかりませんでした。ファイル名規則を確認してください。")
+        st.error("No matchable file pairs were found. Please check the filename convention.")
     else:
         records = []
         transition_tables = {}
@@ -501,13 +498,13 @@ if optfreq_files and tddft_files:
 
         df = pd.DataFrame(records)
 
-        st.subheader("5. 対応付け後の一覧")
+        st.subheader("5. Matched file list")
         st.dataframe(df)
 
         valid_df = df[df[energy_choice].notna()].copy()
 
         if valid_df.empty:
-            st.error("選択したエネルギーが取得できた配座がありません。")
+            st.error("No conformers were found with the selected energy available.")
         else:
             e_min = valid_df[energy_choice].min()
             valid_df["delta_E_hartree"] = valid_df[energy_choice] - e_min
@@ -519,12 +516,12 @@ if optfreq_files and tddft_files:
             factor_sum = valid_df["boltz_factor"].sum()
 
             if factor_sum == 0:
-                st.error("ボルツマン因子の合計が 0 になりました。")
+                st.error("The sum of Boltzmann factors became zero.")
             else:
                 valid_df["boltz_weight"] = valid_df["boltz_factor"] / factor_sum
                 valid_df = valid_df.sort_values(by=energy_choice).reset_index(drop=True)
 
-                st.subheader("6. 相対エネルギーとボルツマン重み")
+                st.subheader("6. Relative energies and Boltzmann weights")
                 st.dataframe(valid_df)
 
                 wavelength_grid = make_wavelength_grid(
@@ -535,7 +532,7 @@ if optfreq_files and tddft_files:
                     n_points=n_points
                 )
 
-                st.write(f"実際の横軸点数: {len(wavelength_grid)}")
+                st.write(f"Actual number of x-axis points: {len(wavelength_grid)}")
 
                 individual_uv_spectra = {}
                 individual_ecd_spectra = {}
@@ -571,18 +568,18 @@ if optfreq_files and tddft_files:
                     averaged_uv_spectrum += weight * uv_y
                     averaged_ecd_spectrum += weight * ecd_y
 
-                st.subheader("7. 抽出された TD-DFT 遷移")
+                st.subheader("7. Extracted TD-DFT transitions")
                 for key in df["conf_key"]:
-                    with st.expander(f"{key} の遷移を表示"):
+                    with st.expander(f"Show transitions for {key}"):
                         transitions = transition_tables.get(key, [])
                         if transitions:
                             st.dataframe(pd.DataFrame(transitions))
                         else:
-                            st.warning("遷移情報または rotatory strength を抽出できませんでした。")
+                            st.warning("Failed to extract transition information or rotatory strengths.")
 
-                show_individual = st.checkbox("各配座スペクトルも表示する", value=True)
+                show_individual = st.checkbox("Show individual conformer spectra", value=True)
 
-                st.subheader("8. UV スペクトル")
+                st.subheader("8. UV spectrum")
                 fig_uv, ax_uv = plt.subplots(figsize=(8, 5))
 
                 if show_individual:
@@ -597,7 +594,7 @@ if optfreq_files and tddft_files:
 
                 st.pyplot(fig_uv)
 
-                st.subheader("9. ECD スペクトル")
+                st.subheader("9. ECD spectrum")
                 fig_ecd, ax_ecd = plt.subplots(figsize=(8, 5))
 
                 if show_individual:
@@ -628,11 +625,11 @@ if optfreq_files and tddft_files:
                 csv_data = export_df.to_csv(index=False).encode("utf-8")
 
                 st.download_button(
-                    "UV / ECD スペクトルCSVをダウンロード",
+                    "Download UV / ECD spectra CSV",
                     data=csv_data,
                     file_name="uv_ecd_boltzmann_averaged.csv",
                     mime="text/csv"
                 )
 
 else:
-    st.info("opt/optfreq ファイル群と TD-DFT ファイル群の両方をアップロードしてください。")
+    st.info("Please upload both opt/optfreq files and TD-DFT files.")
