@@ -6,15 +6,27 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 st.title("ECD Boltzmann Averaging App")
-st.write("Gaussian TD-DFT ログから ECD スペクトルを作成し、ボルツマン平均します。")
+st.write("opt/optfreq ログと TD-DFT ログを別々に読み込み、配座ごとに対応付けて ECD をボルツマン平均します。")
 
 HARTREE_TO_KCAL = 627.509474
 R_KCAL = 0.0019872041  # kcal mol^-1 K^-1
 
 
-# -----------------------------
-# エネルギー抽出
-# -----------------------------
+# --------------------------------------------------
+# 補助：ファイル名から配座キーを作る
+# 例:
+# conf01_optfreq.log -> conf01
+# conf01_tddft.log   -> conf01
+# --------------------------------------------------
+def make_base_key(filename):
+    name = filename.rsplit(".", 1)[0]  # 拡張子除去
+    name = re.sub(r"(_optfreq|_opt|_freq|_tddft|_td)$", "", name, flags=re.IGNORECASE)
+    return name
+
+
+# --------------------------------------------------
+# エネルギー抽出（opt/optfreq側）
+# --------------------------------------------------
 def extract_energies(text):
     result = {
         "scf_energy": None,
@@ -46,29 +58,39 @@ def extract_energies(text):
     return result
 
 
-# -----------------------------
+# --------------------------------------------------
+# TD-DFT 遷移抽出
+# 例:
+# Excited State   1:      Singlet-A      4.1234 eV  300.73 nm  f=0.1234
+# --------------------------------------------------
+def extract_excited_states(text):
+    states = []
+
+    pattern = re.compile(
+        r"Excited State\s+(\d+):.*?(\d+\.\d+)\s+eV\s+(\d+\.\d+)\s+nm\s+f=([-\d\.]+)",
+        re.MULTILINE
+    )
+
+    for m in pattern.finditer(text):
+        states.append({
+            "state": int(m.group(1)),
+            "excitation_ev": float(m.group(2)),
+            "wavelength_nm": float(m.group(3)),
+            "osc_strength": float(m.group(4)),
+        })
+
+    return states
+
+
+# --------------------------------------------------
 # Rotatory strength 抽出
-# Gaussian の "R(length)" 行を想定
-# -----------------------------
+# 注意:
+# Gaussian の出力形式は揺れるので、まずは簡易版
+# "Rotatory Strengths" ブロックの各行末の数値を採用
+# --------------------------------------------------
 def extract_rotatory_strengths(text):
     rot_strengths = []
 
-    # 例:
-    # 1/2=  -0.1234  0.5678 ...
-    # ではなく、Gaussian の
-    # R(length) などを含む部分は出力形式がやや揺れるため、
-    # まず "Rotatory Strengths" セクションを拾わずに、
-    # よく出るパターンを直接探す
-    #
-    # 代表例:
-    # 1  -0.1234
-    # 2   0.5678
-    #
-    # 今回は "state番号 + 数値" を拾う簡易版ではなく、
-    # "R(length)" 行からすべての数値を取る方式にします。
-
-    # Gaussian 出力によっては "Rotatory Strengths (R)" の後に
-    # 数表が続く場合があるので、そのブロックをざっくり抽出
     block_match = re.search(
         r"Rotatory Strengths.*?\n(.*?)(?:\n\s*\n|\n\s*Total|\Z)",
         text,
@@ -80,64 +102,26 @@ def extract_rotatory_strengths(text):
 
     block = block_match.group(1)
 
-    # 行ごとに処理
     for line in block.splitlines():
         line = line.strip()
         if not line:
             continue
 
-        # 例:
-        # 1   -0.12345
-        # 2    0.23456
-        # または複数列ある場合もあるので、先頭が整数の行だけ見る
         if re.match(r"^\d+", line):
             nums = re.findall(r"[-+]?\d+\.\d+(?:[Ee][-+]?\d+)?", line)
             if nums:
-                # 一番最後の数値を rotatory strength とみなす簡易版
                 rot_strengths.append(float(nums[-1]))
 
     return rot_strengths
 
 
-# -----------------------------
-# Excited State 抽出
-# 例:
-# Excited State   1:      Singlet-A      4.1234 eV  300.73 nm  f=0.1234
-# -----------------------------
-def extract_excited_states(text):
-    states = []
-
-    pattern = re.compile(
-        r"Excited State\s+(\d+):.*?(\d+\.\d+)\s+eV\s+(\d+\.\d+)\s+nm\s+f=([-\d\.]+)",
-        re.MULTILINE
-    )
-
-    for m in pattern.finditer(text):
-        state_num = int(m.group(1))
-        excitation_ev = float(m.group(2))
-        wavelength_nm = float(m.group(3))
-        oscillator_strength = float(m.group(4))
-
-        states.append({
-            "state": state_num,
-            "excitation_ev": excitation_ev,
-            "wavelength_nm": wavelength_nm,
-            "osc_strength": oscillator_strength,
-        })
-
-    return states
-
-
-# -----------------------------
-# excited states と rotatory strengths を結合
-# -----------------------------
 def extract_transitions(text):
     states = extract_excited_states(text)
     rot_strengths = extract_rotatory_strengths(text)
 
     transitions = []
-
     n = min(len(states), len(rot_strengths))
+
     for i in range(n):
         row = states[i].copy()
         row["rot_strength"] = rot_strengths[i]
@@ -146,9 +130,9 @@ def extract_transitions(text):
     return transitions
 
 
-# -----------------------------
+# --------------------------------------------------
 # ボルツマン計算
-# -----------------------------
+# --------------------------------------------------
 def safe_exp(x):
     try:
         return math.exp(x)
@@ -156,35 +140,6 @@ def safe_exp(x):
         return 0.0
 
 
-def build_energy_table(file_data_list, energy_choice, temperature):
-    df = pd.DataFrame(file_data_list)
-
-    valid_df = df[df[energy_choice].notna()].copy()
-
-    if valid_df.empty:
-        return df, None
-
-    e_min = valid_df[energy_choice].min()
-    valid_df["delta_E_hartree"] = valid_df[energy_choice] - e_min
-    valid_df["delta_E_kcal_mol"] = valid_df["delta_E_hartree"] * HARTREE_TO_KCAL
-
-    valid_df["boltz_factor"] = valid_df["delta_E_kcal_mol"].apply(
-        lambda x: safe_exp(-x / (R_KCAL * temperature))
-    )
-
-    factor_sum = valid_df["boltz_factor"].sum()
-    if factor_sum == 0:
-        return df, None
-
-    valid_df["boltz_weight"] = valid_df["boltz_factor"] / factor_sum
-    valid_df = valid_df.sort_values(by=energy_choice).reset_index(drop=True)
-
-    return df, valid_df
-
-
-# -----------------------------
-# Gaussian broadening
-# -----------------------------
 def gaussian_broadening(x, center, height, sigma):
     return height * np.exp(-0.5 * ((x - center) / sigma) ** 2)
 
@@ -200,13 +155,23 @@ def build_ecd_spectrum(transitions, wavelength_grid, sigma_nm):
     return y
 
 
-# -----------------------------
+# --------------------------------------------------
 # UI
-# -----------------------------
-uploaded_files = st.file_uploader(
-    "Gaussian の .log または .out ファイルを選択してください",
+# --------------------------------------------------
+st.subheader("1. opt / optfreq ファイル")
+optfreq_files = st.file_uploader(
+    "opt または optfreq の .log / .out を選択してください",
     type=["log", "out"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    key="optfreq_files"
+)
+
+st.subheader("2. TD-DFT ファイル")
+tddft_files = st.file_uploader(
+    "TD-DFT の .log / .out を選択してください",
+    type=["log", "out"],
+    accept_multiple_files=True,
+    key="tddft_files"
 )
 
 energy_choice = st.selectbox(
@@ -226,109 +191,170 @@ temperature = st.number_input(
     step=1.0
 )
 
-st.subheader("スペクトル設定")
+st.subheader("3. スペクトル設定")
 wl_min = st.number_input("最小波長 (nm)", value=180.0)
 wl_max = st.number_input("最大波長 (nm)", value=450.0)
 n_points = st.number_input("プロット点数", min_value=200, value=2000, step=100)
 sigma_nm = st.number_input("Gaussian broadening 幅 sigma (nm)", min_value=0.1, value=10.0, step=0.5)
 
-if uploaded_files:
-    file_data_list = []
-    transition_tables = {}
-
-    for f in uploaded_files:
+if optfreq_files and tddft_files:
+    # ------------------------
+    # optfreq 側を辞書化
+    # ------------------------
+    energy_dict = {}
+    for f in optfreq_files:
         text = f.read().decode("utf-8", errors="ignore")
-
+        key = make_base_key(f.name)
         energies = extract_energies(text)
-        transitions = extract_transitions(text)
 
-        file_data_list.append({
-            "file_name": f.name,
+        energy_dict[key] = {
+            "optfreq_file": f.name,
             "scf_energy": energies["scf_energy"],
             "zpe_energy": energies["zpe_energy"],
             "free_energy": energies["free_energy"],
+        }
+
+    # ------------------------
+    # tddft 側を辞書化
+    # ------------------------
+    transition_dict = {}
+    for f in tddft_files:
+        text = f.read().decode("utf-8", errors="ignore")
+        key = make_base_key(f.name)
+        transitions = extract_transitions(text)
+
+        transition_dict[key] = {
+            "tddft_file": f.name,
+            "transitions": transitions,
             "n_transitions": len(transitions),
-        })
+        }
 
-        transition_tables[f.name] = transitions
+    # ------------------------
+    # 共通キーでマージ
+    # ------------------------
+    common_keys = sorted(set(energy_dict.keys()) & set(transition_dict.keys()))
+    only_energy_keys = sorted(set(energy_dict.keys()) - set(transition_dict.keys()))
+    only_tddft_keys = sorted(set(transition_dict.keys()) - set(energy_dict.keys()))
 
-    raw_df, valid_df = build_energy_table(file_data_list, energy_choice, temperature)
+    st.subheader("4. ペアリング結果")
+    st.write(f"対応付けできた配座数: {len(common_keys)}")
 
-    st.subheader("抽出されたエネルギー")
-    st.dataframe(raw_df)
+    if only_energy_keys:
+        st.warning("opt/optfreq 側だけにあるキー: " + ", ".join(only_energy_keys))
 
-    if valid_df is None:
-        st.error("選択したエネルギーでボルツマン重みを計算できませんでした。")
+    if only_tddft_keys:
+        st.warning("TD-DFT 側だけにあるキー: " + ", ".join(only_tddft_keys))
+
+    if len(common_keys) == 0:
+        st.error("共通の配座キーが見つかりませんでした。ファイル名規則を確認してください。")
     else:
-        st.subheader("相対エネルギーとボルツマン重み")
-        st.dataframe(valid_df)
+        records = []
+        transition_tables = {}
 
-        # 波長軸
-        wavelength_grid = np.linspace(wl_min, wl_max, int(n_points))
+        for key in common_keys:
+            e = energy_dict[key]
+            t = transition_dict[key]
 
-        # 各配座スペクトル
-        individual_spectra = {}
-        averaged_spectrum = np.zeros_like(wavelength_grid)
+            records.append({
+                "conf_key": key,
+                "optfreq_file": e["optfreq_file"],
+                "tddft_file": t["tddft_file"],
+                "scf_energy": e["scf_energy"],
+                "zpe_energy": e["zpe_energy"],
+                "free_energy": e["free_energy"],
+                "n_transitions": t["n_transitions"],
+            })
 
-        for _, row in valid_df.iterrows():
-            file_name = row["file_name"]
-            weight = row["boltz_weight"]
-            transitions = transition_tables.get(file_name, [])
+            transition_tables[key] = t["transitions"]
 
-            if len(transitions) == 0:
-                continue
+        df = pd.DataFrame(records)
 
-            y = build_ecd_spectrum(transitions, wavelength_grid, sigma_nm)
-            individual_spectra[file_name] = y
-            averaged_spectrum += weight * y
+        st.subheader("5. 対応付け後の一覧")
+        st.dataframe(df)
 
-        # 遷移情報表示
-        st.subheader("抽出された TD-DFT 遷移")
-        for file_name, transitions in transition_tables.items():
-            with st.expander(f"{file_name} の遷移を表示"):
-                if transitions:
-                    st.dataframe(pd.DataFrame(transitions))
-                else:
-                    st.warning("遷移情報または rotatory strength を抽出できませんでした。")
+        valid_df = df[df[energy_choice].notna()].copy()
 
-        # グラフ
-        st.subheader("ECD スペクトル")
+        if valid_df.empty:
+            st.error("選択したエネルギーが取得できた配座がありません。")
+        else:
+            e_min = valid_df[energy_choice].min()
+            valid_df["delta_E_hartree"] = valid_df[energy_choice] - e_min
+            valid_df["delta_E_kcal_mol"] = valid_df["delta_E_hartree"] * HARTREE_TO_KCAL
+            valid_df["boltz_factor"] = valid_df["delta_E_kcal_mol"].apply(
+                lambda x: safe_exp(-x / (R_KCAL * temperature))
+            )
 
-        show_individual = st.checkbox("各配座スペクトルも表示する", value=True)
+            factor_sum = valid_df["boltz_factor"].sum()
 
-        fig, ax = plt.subplots(figsize=(8, 5))
+            if factor_sum == 0:
+                st.error("ボルツマン因子の合計が 0 になりました。")
+            else:
+                valid_df["boltz_weight"] = valid_df["boltz_factor"] / factor_sum
+                valid_df = valid_df.sort_values(by=energy_choice).reset_index(drop=True)
 
-        if show_individual:
-            for file_name, y in individual_spectra.items():
-                ax.plot(wavelength_grid, y, label=file_name)
+                st.subheader("6. 相対エネルギーとボルツマン重み")
+                st.dataframe(valid_df)
 
-        ax.plot(wavelength_grid, averaged_spectrum, linewidth=2.5, label="Boltzmann-averaged ECD")
-        ax.axhline(0, linewidth=1)
+                wavelength_grid = np.linspace(wl_min, wl_max, int(n_points))
+                individual_spectra = {}
+                averaged_spectrum = np.zeros_like(wavelength_grid)
 
-        ax.set_xlabel("Wavelength (nm)")
-        ax.set_ylabel("ECD intensity (arb. units)")
-        ax.set_title("ECD Spectrum")
-        ax.legend()
+                for _, row in valid_df.iterrows():
+                    key = row["conf_key"]
+                    weight = row["boltz_weight"]
+                    transitions = transition_tables.get(key, [])
 
-        st.pyplot(fig)
+                    if len(transitions) == 0:
+                        continue
 
-        # CSV 出力
-        export_df = pd.DataFrame({
-            "wavelength_nm": wavelength_grid,
-            "ecd_avg": averaged_spectrum,
-        })
+                    y = build_ecd_spectrum(transitions, wavelength_grid, sigma_nm)
+                    individual_spectra[key] = y
+                    averaged_spectrum += weight * y
 
-        for file_name, y in individual_spectra.items():
-            export_df[f"ecd_{file_name}"] = y
+                st.subheader("7. 抽出された TD-DFT 遷移")
+                for key in common_keys:
+                    with st.expander(f"{key} の遷移を表示"):
+                        transitions = transition_tables.get(key, [])
+                        if transitions:
+                            st.dataframe(pd.DataFrame(transitions))
+                        else:
+                            st.warning("遷移情報または rotatory strength を抽出できませんでした。")
 
-        csv_data = export_df.to_csv(index=False).encode("utf-8")
+                st.subheader("8. ECD スペクトル")
+                show_individual = st.checkbox("各配座スペクトルも表示する", value=True)
 
-        st.download_button(
-            "平均スペクトルCSVをダウンロード",
-            data=csv_data,
-            file_name="ecd_boltzmann_averaged.csv",
-            mime="text/csv"
-        )
+                fig, ax = plt.subplots(figsize=(8, 5))
+
+                if show_individual:
+                    for key, y in individual_spectra.items():
+                        ax.plot(wavelength_grid, y, label=key)
+
+                ax.plot(wavelength_grid, averaged_spectrum, linewidth=2.5, label="Boltzmann-averaged ECD")
+                ax.axhline(0, linewidth=1)
+
+                ax.set_xlabel("Wavelength (nm)")
+                ax.set_ylabel("ECD intensity (arb. units)")
+                ax.set_title("ECD Spectrum")
+                ax.legend()
+
+                st.pyplot(fig)
+
+                export_df = pd.DataFrame({
+                    "wavelength_nm": wavelength_grid,
+                    "ecd_avg": averaged_spectrum,
+                })
+
+                for key, y in individual_spectra.items():
+                    export_df[f"ecd_{key}"] = y
+
+                csv_data = export_df.to_csv(index=False).encode("utf-8")
+
+                st.download_button(
+                    "平均スペクトルCSVをダウンロード",
+                    data=csv_data,
+                    file_name="ecd_boltzmann_averaged.csv",
+                    mime="text/csv"
+                )
 
 else:
-    st.info("まだファイルが選択されていません。")
+    st.info("opt/optfreq ファイル群と TD-DFT ファイル群の両方をアップロードしてください。")
