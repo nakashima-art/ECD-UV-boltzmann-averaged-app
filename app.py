@@ -371,8 +371,8 @@ temperature = st.number_input(
 )
 
 st.subheader("3. Spectrum settings")
-wl_min = st.number_input("Minimum wavelength (nm)", value=180.0)
-wl_max = st.number_input("Maximum wavelength (nm)", value=450.0)
+wl_min = st.number_input("Minimum wavelength (nm)", value=150.0)
+wl_max = st.number_input("Maximum wavelength (nm)", value=400.0)
 
 axis_mode = st.radio(
     "X-axis specification",
