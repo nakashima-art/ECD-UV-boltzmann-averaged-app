@@ -1,18 +1,255 @@
 import re
 import math
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
-st.title("ECD / UV Boltzmann Averaging App")
-st.caption("ver. 1.0")
-st.write("Upload opt/optfreq logs and TD-DFT logs separately, match conformers, and perform Boltzmann averaging for UV / ECD spectra.")
-st.info("Files are paired based on a common suffix in the filename. Please make sure each opt/optfreq file and its corresponding TD-DFT file share the same suffix.")
+
+# =========================================================
+# Page / metadata
+# =========================================================
+APP_VERSION = "1.2"
+
+DEVELOPER_INFO = {
+    "name": "Ken-ichi Nakashima",
+    "affiliation_ja": "愛知学院大学 薬学部 薬用資源学講座",
+    "affiliation_en": "Aichi-Gakuin University\nSchool of Pharmacy\nLaboratory of Natural Resources",
+}
+
+st.set_page_config(page_title="ECD / UV Boltzmann Averaging App", layout="wide")
 
 HARTREE_TO_KCAL = 627.509474
 R_KCAL = 0.0019872041  # kcal mol^-1 K^-1
 NM_PER_EV = 1239.841984  # lambda(nm) = 1239.841984 / E(eV)
+
+
+# =========================================================
+# UI text
+# =========================================================
+UI_TEXT = {
+    "en": {
+        "title": "ECD / UV Boltzmann Averaging App",
+        "caption": f"Ver. {APP_VERSION}",
+        "description": "Upload opt/optfreq logs and TD-DFT logs separately, match conformers, and perform Boltzmann averaging for UV / ECD spectra.",
+        "info": "Files are paired based on a common suffix in the filename. Please make sure each opt/optfreq file and its corresponding TD-DFT file share the same suffix.",
+        "settings": "Settings",
+        "developer_info": "Developer information",
+        "developer_name": "Name",
+        "developer_affiliation": "Affiliation",
+        "optfreq_header": "1. opt / optfreq files",
+        "optfreq_upload": "Select opt or optfreq .log / .out files",
+        "tddft_header": "2. TD-DFT files",
+        "tddft_upload": "Select TD-DFT .log / .out files",
+        "energy_choice": "Select the energy to use for Boltzmann averaging",
+        "free_energy": "Free energy",
+        "zpe_energy": "Zero-point energy",
+        "scf_energy": "SCF energy",
+        "temperature": "Temperature (K)",
+        "spectrum_settings": "3. Spectrum settings",
+        "wl_min": "Minimum wavelength (nm)",
+        "wl_max": "Maximum wavelength (nm)",
+        "axis_mode": "X-axis specification",
+        "point_spacing": "Specify point spacing",
+        "n_points": "Specify number of points",
+        "point_spacing_nm": "Point spacing (nm)",
+        "n_points_label": "Number of points",
+        "broadening_mode": "Broadening specification",
+        "sigma_nm_mode": "Gaussian broadening width sigma (nm)",
+        "halfwidth_ev_mode": "Half-Width (eV)",
+        "sigma_nm": "Gaussian broadening width sigma (nm)",
+        "halfwidth_ev": "Half-Width (eV)",
+        "pairing_header": "4. Pairing results",
+        "matched_conformers": "Number of matched conformers",
+        "only_opt_warning": "Files found only on the opt/optfreq side: ",
+        "only_td_warning": "Files found only on the TD-DFT side: ",
+        "no_pairs": "No matchable file pairs were found. Please check the filename convention.",
+        "matched_list_header": "5. Matched file list",
+        "no_valid_energy": "No conformers were found with the selected energy available.",
+        "weights_header": "6. Relative energies and Boltzmann weights",
+        "axis_points": "Actual number of x-axis points",
+        "transitions_header": "7. Extracted TD-DFT transitions",
+        "show_transitions": "Show transitions for {key}",
+        "transition_extract_fail": "Failed to extract transition information or rotatory strengths.",
+        "show_individual": "Show individual conformer spectra",
+        "uv_header": "8. UV spectrum",
+        "uv_ylabel": "UV intensity (arb. units)",
+        "uv_title": "UV Spectrum",
+        "uv_avg_label": "Boltzmann-averaged UV",
+        "ecd_header": "9. ECD spectrum",
+        "ecd_ylabel": "ECD intensity (arb. units)",
+        "ecd_title": "ECD Spectrum",
+        "ecd_avg_label": "Boltzmann-averaged ECD",
+        "download_csv": "Download UV / ECD spectra CSV",
+        "download_filename": "uv_ecd_boltzmann_averaged.csv",
+        "need_uploads": "Please upload both opt/optfreq files and TD-DFT files.",
+        "output_prefix_info": "Download filename uses the common prefix of uploaded input files.",
+    },
+    "ja": {
+        "title": "ECD / UV Boltzmann Averaging App",
+        "caption": f"Ver. {APP_VERSION}",
+        "description": "opt / optfreq ログと TD-DFT ログを別々にアップロードし、配座を対応付けて UV / ECD スペクトルの Boltzmann 平均を計算します。",
+        "info": "ファイルはファイル名の共通接尾辞に基づいて対応付けられます。opt / optfreq ファイルと対応する TD-DFT ファイルで、同じ接尾辞を持つようにしてください。",
+        "settings": "設定",
+        "developer_info": "開発者情報",
+        "developer_name": "氏名",
+        "developer_affiliation": "所属",
+        "optfreq_header": "1. opt / optfreq ファイル",
+        "optfreq_upload": "opt または optfreq の .log / .out ファイルを選択",
+        "tddft_header": "2. TD-DFT ファイル",
+        "tddft_upload": "TD-DFT の .log / .out ファイルを選択",
+        "energy_choice": "Boltzmann 平均に用いるエネルギーを選択",
+        "free_energy": "自由エネルギー",
+        "zpe_energy": "ゼロ点エネルギー",
+        "scf_energy": "SCF エネルギー",
+        "temperature": "温度 (K)",
+        "spectrum_settings": "3. スペクトル設定",
+        "wl_min": "最小波長 (nm)",
+        "wl_max": "最大波長 (nm)",
+        "axis_mode": "X軸の指定方法",
+        "point_spacing": "点間隔を指定",
+        "n_points": "点数を指定",
+        "point_spacing_nm": "点間隔 (nm)",
+        "n_points_label": "点数",
+        "broadening_mode": "ブロードニング指定",
+        "sigma_nm_mode": "ガウス幅 sigma (nm)",
+        "halfwidth_ev_mode": "Half-Width (eV)",
+        "sigma_nm": "ガウス幅 sigma (nm)",
+        "halfwidth_ev": "Half-Width (eV)",
+        "pairing_header": "4. 対応付け結果",
+        "matched_conformers": "対応付けられた配座数",
+        "only_opt_warning": "opt / optfreq 側のみに存在するファイル: ",
+        "only_td_warning": "TD-DFT 側のみに存在するファイル: ",
+        "no_pairs": "対応付け可能なファイルペアが見つかりませんでした。ファイル名規則を確認してください。",
+        "matched_list_header": "5. 対応付けられたファイル一覧",
+        "no_valid_energy": "選択したエネルギーが利用可能な配座が見つかりませんでした。",
+        "weights_header": "6. 相対エネルギーと Boltzmann 存在比",
+        "axis_points": "実際のX軸点数",
+        "transitions_header": "7. 抽出された TD-DFT 遷移",
+        "show_transitions": "{key} の遷移を表示",
+        "transition_extract_fail": "遷移情報または rotatory strength の抽出に失敗しました。",
+        "show_individual": "各配座のスペクトルを表示",
+        "uv_header": "8. UV スペクトル",
+        "uv_ylabel": "UV 強度 (arb. units)",
+        "uv_title": "UV Spectrum",
+        "uv_avg_label": "Boltzmann 平均 UV",
+        "ecd_header": "9. ECD スペクトル",
+        "ecd_ylabel": "ECD 強度 (arb. units)",
+        "ecd_title": "ECD Spectrum",
+        "ecd_avg_label": "Boltzmann 平均 ECD",
+        "download_csv": "UV / ECD スペクトル CSV をダウンロード",
+        "download_filename": "uv_ecd_boltzmann_averaged.csv",
+        "need_uploads": "opt / optfreq ファイルと TD-DFT ファイルの両方をアップロードしてください。",
+        "output_prefix_info": "ダウンロードファイル名には入力ファイル名の共通接頭辞を使用します。",
+    },
+}
+
+
+# =========================================================
+# Session state
+# =========================================================
+if "ui_language" not in st.session_state:
+    st.session_state["ui_language"] = "English"
+
+
+def current_language():
+    return "ja" if st.session_state.get("ui_language", "English") == "日本語" else "en"
+
+
+def t(key: str, **kwargs):
+    text = UI_TEXT[current_language()].get(key, key)
+    return text.format(**kwargs) if kwargs else text
+
+
+# =========================================================
+# Filename helpers
+# =========================================================
+def sanitize_filename_part(text):
+    text = Path(text).stem
+    text = re.sub(r"[^\w\-\.]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_.-")
+    return text or "output"
+
+
+def longest_common_prefix(strings):
+    if not strings:
+        return ""
+
+    prefix = strings[0]
+    for s in strings[1:]:
+        i = 0
+        max_len = min(len(prefix), len(s))
+        while i < max_len and prefix[i] == s[i]:
+            i += 1
+        prefix = prefix[:i]
+        if not prefix:
+            break
+    return prefix
+
+
+def clean_common_prefix(prefix):
+    prefix = prefix.strip("_.- ")
+    prefix = re.sub(r"[_\-.]+$", "", prefix)
+    return prefix
+
+
+def build_output_prefix_from_inputs(optfreq_files, tddft_files, min_prefix_len=3, fallback="output"):
+    names = []
+    if optfreq_files:
+        names.extend([sanitize_filename_part(f.name) for f in optfreq_files])
+    if tddft_files:
+        names.extend([sanitize_filename_part(f.name) for f in tddft_files])
+
+    if not names:
+        return fallback
+
+    if len(names) == 1:
+        return names[0]
+
+    prefix = longest_common_prefix(names)
+    prefix = clean_common_prefix(prefix)
+
+    if len(prefix) >= min_prefix_len:
+        return prefix
+
+    return fallback
+
+
+# =========================================================
+# Header
+# =========================================================
+with st.sidebar:
+    selected_language = st.selectbox(
+        "Language / 言語",
+        options=["English", "日本語"],
+        index=0 if st.session_state["ui_language"] == "English" else 1,
+    )
+    st.session_state["ui_language"] = selected_language
+
+st.title(t("title"))
+st.caption(t("caption"))
+st.write(t("description"))
+st.info(t("info"))
+
+st.sidebar.header(t("settings"))
+with st.sidebar.expander(t("developer_info"), expanded=False):
+    if current_language() == "ja":
+        affiliation_text = DEVELOPER_INFO["affiliation_ja"]
+    else:
+        affiliation_text = DEVELOPER_INFO["affiliation_en"]
+
+    st.markdown(
+        f"""
+**{t("developer_name")}**  
+{DEVELOPER_INFO["name"]}
+
+**{t("developer_affiliation")}**  
+{affiliation_text}
+"""
+    )
 
 
 # --------------------------------------------------
@@ -175,11 +412,6 @@ def extract_excited_states(text):
 # Rotatory strength extraction
 # --------------------------------------------------
 def extract_rotatory_strengths(text, mode="length"):
-    """
-    mode:
-        "length"   -> extract R(length)
-        "velocity" -> extract R(velocity)
-    """
     rot_strengths = []
 
     if mode == "length":
@@ -259,7 +491,6 @@ def gaussian_broadening(x, center, height, sigma):
 
 
 def halfwidth_to_sigma(value):
-    # Gaussian HWHM -> sigma
     return value / math.sqrt(2.0 * math.log(2.0))
 
 
@@ -339,55 +570,59 @@ def build_ecd_spectrum(transitions, wavelength_grid, broadening_mode, sigma_nm=N
 # --------------------------------------------------
 # UI
 # --------------------------------------------------
-st.subheader("1. opt / optfreq files")
+st.subheader(t("optfreq_header"))
 optfreq_files = st.file_uploader(
-    "Select opt or optfreq .log / .out files",
+    t("optfreq_upload"),
     type=["log", "out"],
     accept_multiple_files=True,
     key="optfreq_files"
 )
 
-st.subheader("2. TD-DFT files")
+st.subheader(t("tddft_header"))
 tddft_files = st.file_uploader(
-    "Select TD-DFT .log / .out files",
+    t("tddft_upload"),
     type=["log", "out"],
     accept_multiple_files=True,
     key="tddft_files"
 )
 
+output_prefix = build_output_prefix_from_inputs(optfreq_files, tddft_files)
+if optfreq_files or tddft_files:
+    st.caption(t("output_prefix_info"))
+
 energy_choice = st.selectbox(
-    "Select the energy to use for Boltzmann averaging",
+    t("energy_choice"),
     options=["free_energy", "zpe_energy", "scf_energy"],
     format_func=lambda x: {
-        "free_energy": "Free energy",
-        "zpe_energy": "Zero-point energy",
-        "scf_energy": "SCF energy",
+        "free_energy": t("free_energy"),
+        "zpe_energy": t("zpe_energy"),
+        "scf_energy": t("scf_energy"),
     }[x]
 )
 
 temperature = st.number_input(
-    "Temperature (K)",
+    t("temperature"),
     min_value=1.0,
     value=298.15,
     step=1.0
 )
 
-st.subheader("3. Spectrum settings")
-wl_min = st.number_input("Minimum wavelength (nm)", value=150.0)
-wl_max = st.number_input("Maximum wavelength (nm)", value=400.0)
+st.subheader(t("spectrum_settings"))
+wl_min = st.number_input(t("wl_min"), value=150.0)
+wl_max = st.number_input(t("wl_max"), value=400.0)
 
 axis_mode = st.radio(
-    "X-axis specification",
+    t("axis_mode"),
     options=["point_spacing", "n_points"],
     format_func=lambda x: {
-        "point_spacing": "Specify point spacing",
-        "n_points": "Specify number of points",
+        "point_spacing": t("point_spacing"),
+        "n_points": t("n_points"),
     }[x]
 )
 
 if axis_mode == "point_spacing":
     point_spacing_nm = st.number_input(
-        "Point spacing (nm)",
+        t("point_spacing_nm"),
         min_value=0.001,
         value=0.2,
         step=0.1,
@@ -396,7 +631,7 @@ if axis_mode == "point_spacing":
     n_points = None
 else:
     n_points = st.number_input(
-        "Number of points",
+        t("n_points_label"),
         min_value=2,
         value=2000,
         step=100
@@ -404,17 +639,17 @@ else:
     point_spacing_nm = None
 
 broadening_mode = st.radio(
-    "Broadening specification",
+    t("broadening_mode"),
     options=["sigma_nm", "halfwidth_ev"],
     format_func=lambda x: {
-        "sigma_nm": "Gaussian broadening width sigma (nm)",
-        "halfwidth_ev": "Half-Width (eV)",
+        "sigma_nm": t("sigma_nm_mode"),
+        "halfwidth_ev": t("halfwidth_ev_mode"),
     }[x]
 )
 
 if broadening_mode == "sigma_nm":
     sigma_nm = st.number_input(
-        "Gaussian broadening width sigma (nm)",
+        t("sigma_nm"),
         min_value=0.001,
         value=10.0,
         step=0.5
@@ -422,7 +657,7 @@ if broadening_mode == "sigma_nm":
     halfwidth_ev = None
 else:
     halfwidth_ev = st.number_input(
-        "Half-Width (eV)",
+        t("halfwidth_ev"),
         min_value=0.0001,
         value=0.10,
         step=0.01,
@@ -460,17 +695,17 @@ if optfreq_files and tddft_files:
     only_energy_keys = sorted(set(optfreq_data.keys()) - paired_opt_names)
     only_tddft_keys = sorted(set(tddft_data.keys()) - paired_td_names)
 
-    st.subheader("4. Pairing results")
-    st.write(f"Number of matched conformers: {len(pairs)}")
+    st.subheader(t("pairing_header"))
+    st.write(f"{t('matched_conformers')}: {len(pairs)}")
 
     if only_energy_keys:
-        st.warning("Files found only on the opt/optfreq side: " + ", ".join(only_energy_keys))
+        st.warning(t("only_opt_warning") + ", ".join(only_energy_keys))
 
     if only_tddft_keys:
-        st.warning("Files found only on the TD-DFT side: " + ", ".join(only_tddft_keys))
+        st.warning(t("only_td_warning") + ", ".join(only_tddft_keys))
 
     if len(pairs) == 0:
-        st.error("No matchable file pairs were found. Please check the filename convention.")
+        st.error(t("no_pairs"))
     else:
         records = []
         transition_tables = {}
@@ -480,33 +715,33 @@ if optfreq_files and tddft_files:
             td_name = pair["td_name"]
 
             e = optfreq_data[opt_name]
-            t = tddft_data[td_name]
+            td = tddft_data[td_name]
 
             conf_label = f"pair_{i:02d}"
 
             records.append({
                 "conf_key": conf_label,
                 "optfreq_file": e["optfreq_file"],
-                "tddft_file": t["tddft_file"],
+                "tddft_file": td["tddft_file"],
                 "suffix_token_score": pair["token_score"],
                 "suffix_char_score": pair["char_score"],
                 "scf_energy": e["scf_energy"],
                 "zpe_energy": e["zpe_energy"],
                 "free_energy": e["free_energy"],
-                "n_transitions": t["n_transitions"],
+                "n_transitions": td["n_transitions"],
             })
 
-            transition_tables[conf_label] = t["transitions"]
+            transition_tables[conf_label] = td["transitions"]
 
         df = pd.DataFrame(records)
 
-        st.subheader("5. Matched file list")
+        st.subheader(t("matched_list_header"))
         st.dataframe(df)
 
         valid_df = df[df[energy_choice].notna()].copy()
 
         if valid_df.empty:
-            st.error("No conformers were found with the selected energy available.")
+            st.error(t("no_valid_energy"))
         else:
             e_min = valid_df[energy_choice].min()
             valid_df["delta_E_hartree"] = valid_df[energy_choice] - e_min
@@ -523,7 +758,7 @@ if optfreq_files and tddft_files:
                 valid_df["boltz_weight"] = valid_df["boltz_factor"] / factor_sum
                 valid_df = valid_df.sort_values(by=energy_choice).reset_index(drop=True)
 
-                st.subheader("6. Relative energies and Boltzmann weights")
+                st.subheader(t("weights_header"))
                 st.dataframe(valid_df)
 
                 wavelength_grid = make_wavelength_grid(
@@ -534,7 +769,7 @@ if optfreq_files and tddft_files:
                     n_points=n_points
                 )
 
-                st.write(f"Actual number of x-axis points: {len(wavelength_grid)}")
+                st.write(f"{t('axis_points')}: {len(wavelength_grid)}")
 
                 individual_uv_spectra = {}
                 individual_ecd_spectra = {}
@@ -570,44 +805,44 @@ if optfreq_files and tddft_files:
                     averaged_uv_spectrum += weight * uv_y
                     averaged_ecd_spectrum += weight * ecd_y
 
-                st.subheader("7. Extracted TD-DFT transitions")
+                st.subheader(t("transitions_header"))
                 for key in df["conf_key"]:
-                    with st.expander(f"Show transitions for {key}"):
+                    with st.expander(t("show_transitions", key=key)):
                         transitions = transition_tables.get(key, [])
                         if transitions:
                             st.dataframe(pd.DataFrame(transitions))
                         else:
-                            st.warning("Failed to extract transition information or rotatory strengths.")
+                            st.warning(t("transition_extract_fail"))
 
-                show_individual = st.checkbox("Show individual conformer spectra", value=True)
+                show_individual = st.checkbox(t("show_individual"), value=False)
 
-                st.subheader("8. UV spectrum")
+                st.subheader(t("uv_header"))
                 fig_uv, ax_uv = plt.subplots(figsize=(8, 5))
 
                 if show_individual:
                     for key, y in individual_uv_spectra.items():
                         ax_uv.plot(wavelength_grid, y, label=key)
 
-                ax_uv.plot(wavelength_grid, averaged_uv_spectrum, linewidth=2.5, label="Boltzmann-averaged UV")
+                ax_uv.plot(wavelength_grid, averaged_uv_spectrum, linewidth=2.5, label=t("uv_avg_label"))
                 ax_uv.set_xlabel("Wavelength (nm)")
-                ax_uv.set_ylabel("UV intensity (arb. units)")
-                ax_uv.set_title("UV Spectrum")
+                ax_uv.set_ylabel(t("uv_ylabel"))
+                ax_uv.set_title(t("uv_title"))
                 ax_uv.legend()
 
                 st.pyplot(fig_uv)
 
-                st.subheader("9. ECD spectrum")
+                st.subheader(t("ecd_header"))
                 fig_ecd, ax_ecd = plt.subplots(figsize=(8, 5))
 
                 if show_individual:
                     for key, y in individual_ecd_spectra.items():
                         ax_ecd.plot(wavelength_grid, y, label=key)
 
-                ax_ecd.plot(wavelength_grid, averaged_ecd_spectrum, linewidth=2.5, label="Boltzmann-averaged ECD")
+                ax_ecd.plot(wavelength_grid, averaged_ecd_spectrum, linewidth=2.5, label=t("ecd_avg_label"))
                 ax_ecd.axhline(0, linewidth=1)
                 ax_ecd.set_xlabel("Wavelength (nm)")
-                ax_ecd.set_ylabel("ECD intensity (arb. units)")
-                ax_ecd.set_title("ECD Spectrum")
+                ax_ecd.set_ylabel(t("ecd_ylabel"))
+                ax_ecd.set_title(t("ecd_title"))
                 ax_ecd.legend()
 
                 st.pyplot(fig_ecd)
@@ -627,11 +862,11 @@ if optfreq_files and tddft_files:
                 csv_data = export_df.to_csv(index=False).encode("utf-8")
 
                 st.download_button(
-                    "Download UV / ECD spectra CSV",
+                    t("download_csv"),
                     data=csv_data,
-                    file_name="uv_ecd_boltzmann_averaged.csv",
+                    file_name=f"{output_prefix}_{t('download_filename')}",
                     mime="text/csv"
                 )
 
 else:
-    st.info("Please upload both opt/optfreq files and TD-DFT files.")
+    st.info(t("need_uploads"))
