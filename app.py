@@ -11,7 +11,7 @@ import streamlit as st
 # =========================================================
 # Page / metadata
 # =========================================================
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 
 DEVELOPER_INFO = {
     "name": "Ken-ichi Nakashima",
@@ -68,6 +68,7 @@ UI_TEXT = {
         "no_pairs": "No matchable file pairs were found. Please check the filename convention.",
         "matched_list_header": "5. Matched file list",
         "no_valid_energy": "No conformers were found with the selected energy available.",
+        "zero_boltz_error": "The sum of Boltzmann factors became zero.",
         "weights_header": "6. Relative energies and Boltzmann weights",
         "axis_points": "Actual number of x-axis points",
         "transitions_header": "7. Extracted TD-DFT transitions",
@@ -75,13 +76,7 @@ UI_TEXT = {
         "transition_extract_fail": "Failed to extract transition information or rotatory strengths.",
         "show_individual": "Show individual conformer spectra",
         "uv_header": "8. UV spectrum",
-        "uv_ylabel": "UV intensity (arb. units)",
-        "uv_title": "UV Spectrum",
-        "uv_avg_label": "Boltzmann-averaged UV",
         "ecd_header": "9. ECD spectrum",
-        "ecd_ylabel": "ECD intensity (arb. units)",
-        "ecd_title": "ECD Spectrum",
-        "ecd_avg_label": "Boltzmann-averaged ECD",
         "download_csv": "Download UV / ECD spectra CSV",
         "download_filename": "uv_ecd_boltzmann_averaged.csv",
         "need_uploads": "Please upload both opt/optfreq files and TD-DFT files.",
@@ -125,6 +120,7 @@ UI_TEXT = {
         "no_pairs": "対応付け可能なファイルペアが見つかりませんでした。ファイル名規則を確認してください。",
         "matched_list_header": "5. 対応付けられたファイル一覧",
         "no_valid_energy": "選択したエネルギーが利用可能な配座が見つかりませんでした。",
+        "zero_boltz_error": "Boltzmann 因子の合計が 0 になりました。",
         "weights_header": "6. 相対エネルギーと Boltzmann 存在比",
         "axis_points": "実際のX軸点数",
         "transitions_header": "7. 抽出された TD-DFT 遷移",
@@ -132,13 +128,7 @@ UI_TEXT = {
         "transition_extract_fail": "遷移情報または rotatory strength の抽出に失敗しました。",
         "show_individual": "各配座のスペクトルを表示",
         "uv_header": "8. UV スペクトル",
-        "uv_ylabel": "UV 強度 (arb. units)",
-        "uv_title": "UV Spectrum",
-        "uv_avg_label": "Boltzmann 平均 UV",
         "ecd_header": "9. ECD スペクトル",
-        "ecd_ylabel": "ECD 強度 (arb. units)",
-        "ecd_title": "ECD Spectrum",
-        "ecd_avg_label": "Boltzmann 平均 ECD",
         "download_csv": "UV / ECD スペクトル CSV をダウンロード",
         "download_filename": "uv_ecd_boltzmann_averaged.csv",
         "need_uploads": "opt / optfreq ファイルと TD-DFT ファイルの両方をアップロードしてください。",
@@ -752,7 +742,7 @@ if optfreq_files and tddft_files:
             factor_sum = valid_df["boltz_factor"].sum()
 
             if factor_sum == 0:
-                st.error("The sum of Boltzmann factors became zero.")
+                st.error(t("zero_boltz_error"))
             else:
                 valid_df["boltz_weight"] = valid_df["boltz_factor"] / factor_sum
                 valid_df = valid_df.sort_values(by=energy_choice).reset_index(drop=True)
@@ -822,10 +812,10 @@ if optfreq_files and tddft_files:
                     for key, y in individual_uv_spectra.items():
                         ax_uv.plot(wavelength_grid, y, label=key)
 
-                ax_uv.plot(wavelength_grid, averaged_uv_spectrum, linewidth=2.5, label=t("uv_avg_label"))
+                ax_uv.plot(wavelength_grid, averaged_uv_spectrum, linewidth=2.5, label="Boltzmann-averaged UV")
                 ax_uv.set_xlabel("Wavelength (nm)")
-                ax_uv.set_ylabel(t("uv_ylabel"))
-                ax_uv.set_title(t("uv_title"))
+                ax_uv.set_ylabel("UV intensity (arb. units)")
+                ax_uv.set_title("UV Spectrum")
                 ax_uv.legend()
 
                 st.pyplot(fig_uv)
@@ -837,11 +827,11 @@ if optfreq_files and tddft_files:
                     for key, y in individual_ecd_spectra.items():
                         ax_ecd.plot(wavelength_grid, y, label=key)
 
-                ax_ecd.plot(wavelength_grid, averaged_ecd_spectrum, linewidth=2.5, label=t("ecd_avg_label"))
+                ax_ecd.plot(wavelength_grid, averaged_ecd_spectrum, linewidth=2.5, label="Boltzmann-averaged ECD")
                 ax_ecd.axhline(0, linewidth=1)
                 ax_ecd.set_xlabel("Wavelength (nm)")
-                ax_ecd.set_ylabel(t("ecd_ylabel"))
-                ax_ecd.set_title(t("ecd_title"))
+                ax_ecd.set_ylabel("ECD intensity (arb. units)")
+                ax_ecd.set_title("ECD Spectrum")
                 ax_ecd.legend()
 
                 st.pyplot(fig_ecd)
