@@ -1,6 +1,5 @@
 import re
 import math
-import json
 from pathlib import Path
 
 import numpy as np
@@ -72,7 +71,7 @@ UI_TEXT = {
         "weights_header": "6. Relative energies and Boltzmann weights",
         "axis_points": "Actual number of x-axis points",
         "transitions_header": "7. Extracted TD-DFT transitions",
-        "show_transitions": "Show transitions for {key}",
+        "show_transitions": "Show transitions for {conf_label}",
         "transition_extract_fail": "Failed to extract transition information or rotatory strengths.",
         "show_individual": "Show individual conformer spectra",
         "uv_header": "8. UV spectrum",
@@ -129,7 +128,7 @@ UI_TEXT = {
         "weights_header": "6. 相対エネルギーと Boltzmann 存在比",
         "axis_points": "実際のX軸点数",
         "transitions_header": "7. 抽出された TD-DFT 遷移",
-        "show_transitions": "{key} の遷移を表示",
+        "show_transitions": "{conf_label} の遷移を表示",
         "transition_extract_fail": "遷移情報または rotatory strength の抽出に失敗しました。",
         "show_individual": "各配座のスペクトルを表示",
         "uv_header": "8. UV スペクトル",
@@ -807,7 +806,7 @@ if optfreq_files and tddft_files:
 
                 st.subheader(t("transitions_header"))
                 for key in df["conf_key"]:
-                    with st.expander(t("show_transitions", key=key)):
+                    with st.expander(t("show_transitions", conf_label=key)):
                         transitions = transition_tables.get(key, [])
                         if transitions:
                             st.dataframe(pd.DataFrame(transitions))
