@@ -11,7 +11,7 @@ import streamlit as st
 # =========================================================
 # Page / metadata
 # =========================================================
-APP_VERSION = "1.3"
+APP_VERSION = "1.4"
 
 DEVELOPER_INFO = {
     "name": "Ken-ichi Nakashima",
@@ -75,6 +75,7 @@ UI_TEXT = {
         "show_transitions": "Show transitions for {conf_label}",
         "transition_extract_fail": "Failed to extract transition information or rotatory strengths.",
         "show_individual": "Show individual conformer spectra",
+        "show_sticks": "Show stick spectra",
         "uv_header": "8. UV spectrum",
         "ecd_header": "9. ECD spectrum",
         "download_csv": "Download UV / ECD spectra CSV",
@@ -127,6 +128,7 @@ UI_TEXT = {
         "show_transitions": "{conf_label} の遷移を表示",
         "transition_extract_fail": "遷移情報または rotatory strength の抽出に失敗しました。",
         "show_individual": "各配座のスペクトルを表示",
+        "show_sticks": "stick spectrum を表示",
         "uv_header": "8. UV スペクトル",
         "ecd_header": "9. ECD スペクトル",
         "download_csv": "UV / ECD スペクトル CSV をダウンロード",
@@ -556,6 +558,43 @@ def build_ecd_spectrum(transitions, wavelength_grid, broadening_mode, sigma_nm=N
         raise ValueError("Unknown broadening_mode")
 
 
+def collect_boltzmann_weighted_sticks(valid_df, transition_tables, intensity_key):
+    """Collect raw transition positions and Boltzmann-weighted intensities."""
+    stick_wavelengths = []
+    stick_intensities = []
+
+    for _, row in valid_df.iterrows():
+        key = row["conf_key"]
+        weight = row["boltz_weight"]
+        transitions = transition_tables.get(key, [])
+
+        for tr in transitions:
+            intensity = tr.get(intensity_key, None)
+            wavelength = tr.get("wavelength_nm", None)
+
+            if intensity is None or wavelength is None:
+                continue
+
+            stick_wavelengths.append(float(wavelength))
+            stick_intensities.append(float(weight) * float(intensity))
+
+    return np.asarray(stick_wavelengths), np.asarray(stick_intensities)
+
+
+def scale_stick_intensities(stick_intensities, reference_spectrum, fraction=0.35):
+    """Scale sticks for overlay only; relative magnitude and sign are preserved."""
+    if stick_intensities.size == 0:
+        return stick_intensities
+
+    stick_max = np.max(np.abs(stick_intensities))
+    reference_max = np.max(np.abs(reference_spectrum))
+
+    if stick_max == 0 or reference_max == 0:
+        return stick_intensities
+
+    return stick_intensities * (fraction * reference_max / stick_max)
+
+
 # --------------------------------------------------
 # UI
 # --------------------------------------------------
@@ -804,6 +843,21 @@ if optfreq_files and tddft_files:
                             st.warning(t("transition_extract_fail"))
 
                 show_individual = st.checkbox(t("show_individual"), value=False)
+                show_sticks = st.checkbox(t("show_sticks"), value=False)
+
+                uv_stick_wavelengths, uv_stick_intensities = collect_boltzmann_weighted_sticks(
+                    valid_df, transition_tables, "osc_strength"
+                )
+                ecd_stick_wavelengths, ecd_stick_intensities = collect_boltzmann_weighted_sticks(
+                    valid_df, transition_tables, "rot_strength"
+                )
+
+                uv_stick_display = scale_stick_intensities(
+                    uv_stick_intensities, averaged_uv_spectrum
+                )
+                ecd_stick_display = scale_stick_intensities(
+                    ecd_stick_intensities, averaged_ecd_spectrum
+                )
 
                 st.subheader(t("uv_header"))
                 fig_uv, ax_uv = plt.subplots(figsize=(8, 5))
@@ -813,6 +867,18 @@ if optfreq_files and tddft_files:
                         ax_uv.plot(wavelength_grid, y, label=key)
 
                 ax_uv.plot(wavelength_grid, averaged_uv_spectrum, linewidth=2.5, label="Boltzmann-averaged UV")
+
+                if show_sticks and uv_stick_wavelengths.size > 0:
+                    uv_mask = (uv_stick_wavelengths >= wl_min) & (uv_stick_wavelengths <= wl_max)
+                    ax_uv.vlines(
+                        uv_stick_wavelengths[uv_mask],
+                        0,
+                        uv_stick_display[uv_mask],
+                        linewidth=0.8,
+                        alpha=0.75,
+                        label="Boltzmann-weighted sticks",
+                    )
+
                 ax_uv.set_xlabel("Wavelength (nm)")
                 ax_uv.set_ylabel("UV intensity (arb. units)")
                 ax_uv.set_title("UV Spectrum")
@@ -828,6 +894,18 @@ if optfreq_files and tddft_files:
                         ax_ecd.plot(wavelength_grid, y, label=key)
 
                 ax_ecd.plot(wavelength_grid, averaged_ecd_spectrum, linewidth=2.5, label="Boltzmann-averaged ECD")
+
+                if show_sticks and ecd_stick_wavelengths.size > 0:
+                    ecd_mask = (ecd_stick_wavelengths >= wl_min) & (ecd_stick_wavelengths <= wl_max)
+                    ax_ecd.vlines(
+                        ecd_stick_wavelengths[ecd_mask],
+                        0,
+                        ecd_stick_display[ecd_mask],
+                        linewidth=0.8,
+                        alpha=0.75,
+                        label="Boltzmann-weighted sticks",
+                    )
+
                 ax_ecd.axhline(0, linewidth=1)
                 ax_ecd.set_xlabel("Wavelength (nm)")
                 ax_ecd.set_ylabel("ECD intensity (arb. units)")
